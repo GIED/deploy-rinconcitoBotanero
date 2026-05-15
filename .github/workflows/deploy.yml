@@ -1,0 +1,88 @@
+name: Build and Deploy Rinconcito Botanero to Linode
+on:
+  push:
+    branches:
+      - main
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Deploy Repository
+        uses: actions/checkout@v3
+      - name: Clone Backend Repository
+        run: |
+          git clone https://x-access-token:${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/GIED/rinconcitoBotaneroApi.git backend
+      - name: Clone Frontend Repository
+        run: |
+          git clone https://x-access-token:${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/GIED/rincocitoBotaneroUi.git frontend
+      - name: Crear carpeta de artefactos
+        run: mkdir -p artifact/backend artifact/frontend
+      - name: Setup Java & Build Backend
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+      - name: Build Backend
+        run: |
+          cd backend
+          mvn clean package -DskipTests
+          cp target/backend-0.0.1-SNAPSHOT.jar ../artifact/backend/backend-0.0.1-SNAPSHOT.jar
+      - name: Setup Node.js & Build Frontend
+        uses: actions/setup-node@v3
+        with:
+          node-version: '22'
+      - name: Build Frontend
+        run: |
+          cd frontend
+          npm install
+          npx ng build --configuration production --base-href /rinconcitoBotanero/
+          cp -r dist/diamond-ng/browser/* ../artifact/frontend/
+      - name: Upload Backend Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-artifact
+          path: artifact/backend/
+      - name: Upload Frontend Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-artifact
+          path: artifact/frontend/
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ secrets.SSH_PORT }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+      - name: Download Backend Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-artifact
+          path: artifact/backend/
+      - name: Download Frontend Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-artifact
+          path: artifact/frontend/
+      - name: Clean Old Versions on Server
+        run: |
+          ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
+            rm -f /opt/webServer/backend/rinconcito-botanero/backend-0.0.1-SNAPSHOT.jar
+            find /var/www/html/rinconcitoBotanero/ -mindepth 1 -delete
+          EOF
+      - name: Upload Backend to Server
+        run: |
+          scp -P ${{ secrets.SSH_PORT }} artifact/backend/backend-0.0.1-SNAPSHOT.jar ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/webServer/backend/rinconcito-botanero/backend-0.0.1-SNAPSHOT.jar
+      - name: Upload Frontend to Server
+        run: |
+          scp -P ${{ secrets.SSH_PORT }} -r artifact/frontend/* ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/var/www/html/rinconcitoBotanero/
+      - name: Restart Services
+        run: |
+          ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
+            chmod +x /opt/webServer/backend/rinconcito-botanero/mi-backend.sh
+            /opt/webServer/backend/rinconcito-botanero/mi-backend.sh restart
+            sudo systemctl restart nginx
+          EOF
